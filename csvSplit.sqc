@@ -1,0 +1,617 @@
+!-----------------------------------------------------------------------------
+!  CSV File Pre-Processer / Formatter and editor.
+!
+!  Reads a text/csv file and creates a new file.  Will edit to enforce field sizes, and accomodate fields that contain CRLFs and break amongst multiple
+!  source recrods, putting them into a single line in the output file.
+!-----------------------------------------------------------------------------
+!-----------------------------------------------------------------------------
+!-----------------------------------------------------------------------------
+!
+!   These arrays should be defined in the calling program.
+!
+!begin-setup
+!Create-Array Name=csvCells Size=50
+!   field=cell:char
+!
+!Create-Array Name=fieldSize Size=50
+!   field=maxLen:integer
+!end-setup
+!
+!    These procedures need to be defined in the calling program (they are called from this SQC):
+!    - init-field-lengths   : This procedure is called to initialize the array that holds the length of each field, so as to edit field size
+!    - load-field-lengths   : This is for hard coded field length definitions.  If called by init-field-lengths it will be needed, else not.
+!    - read-source-csv      : This procedure reads from the source csv file.
+!    - write-csv-file       : This procedure writes the new csv record to the output file
+!    - process-cell-content : Optional procedure to process the cells.  Must be defined, but can be void of code.
+!    - final-processing     : After all records are read, this will be called to do any final processing.  Typically control break, if applicable.
+!
+!  Checks whether the backup file already exists.  If so, this would indicate a failed previous run.
+!
+! Modifications:
+!  May 2014: Ready for first real production implementation along with BAHCSV2.sqr
+!  August 2014: Added logic to handle fields with single double quotes, such as ,......"joe"....., 
+!               Corrected error where #colCnt was being set to zero if there was no file layout assinged to definition
+!               Corrected the logic to switch delimiters.  Will encase fields in quotes in case field already contains characters
+!                    that match new delimiter.
+!               Added logic to stop loop if the fieldCnt goes higher than the colCnt
+!
+begin-procedure backup-exists($backupFN, :$backupExists)
+   let $backupExists = 'N'
+   let #existsRC = exists($backupFN)
+   if #existsRc = 0
+      let $backupExists = 'Y'
+   end-if
+end-procedure
+!
+!  Backups a file (typically the source file) to a backup by re-naming it.  Backup should then be used as the source.
+!
+begin-procedure backup-file($sourceFN, $backupFn, :#renameRC)
+   let $success = 'N'
+   let #renameRC = rename($sourceFN, $backupFN)
+   if #renameRC = 0
+      let $success = 'Y'
+   end-if
+end-procedure
+!
+!  Get Run Control for interface
+!     Input: $prcs_oprid        - Operator Id
+!            $prcs_run_cntl_id  - Run Control Id
+!
+begin-procedure get-int-run-control
+   show 'Run Control Parms'
+   show '================='
+   show 'Oper Id:        ' $prcs_oprid
+   show 'Run Control Id: ' $prcs_run_cntl_id
+BEGIN-SELECT
+RC.OPRID
+RC.RUN_CNTL_ID
+RC.PROCESSING_NAME
+RC.BAH_FLAG1
+RC.BAH_FLAG2
+RC.BAH_FLAG3
+RC.ARCHIVE_FLAG
+   let $RC_OPRID           = &RC.OPRID
+   let $RC_RUN_CNTL_ID     = &RC.RUN_CNTL_ID
+   let $RC_PROCESSING_NAME = &RC.PROCESSING_NAME
+   let $RC_BAH_FLAG1       = &RC.BAH_FLAG1
+   let $RC_BAH_FLAG2       = &RC.BAH_FLAG2
+   let $RC_BAH_FLAG3       = &RC.BAH_FLAG3
+   let $RC_ARCHIVE_FLAG    = &RC.ARCHIVE_FLAG
+
+   show 'Process Config:       ' $RC_PROCESSING_NAME
+   show 'Process File:         ' $RC_BAH_FLAG2
+   show 'Archive File:         ' $RC_ARCHIVE_FLAG
+   show 'Delete after Archive: ' $RC_BAH_FLAG3
+   show 'Test execution:       ' $RC_BAH_FLAG1
+   show ''
+
+FROM HRPRD.PS_BAH_INT_RUN RC
+Where RC.OPRID       = $prcs_oprid
+  and RC.RUN_CNTL_ID = $prcs_run_cntl_id
+END-SELECT
+end-procedure
+!
+!   Get interface configurations from table
+!     Input: $processingName  - Configuration Profile (should come from run control)
+!
+begin-procedure get-interface-configs
+   let $IC_DESCR100 = 'notfound'
+   show 'Retrieve interface configurations for process: ' $processingName
+BEGIN-SELECT
+IC.DESCR100
+IC.FILEPATH1
+IC.FILEPATH2
+IC.FILE_ARCHIVE_DIR
+IC.FILENAME
+IC.FILE_NAME
+IC.FILE_NAME2
+IC.FLDDEFNNAME
+IC.BAH_FILE_LAYOUT
+IC.EFFDT
+IC.ASOFDATE
+IC.DATA_DELIMITER
+IC.FLDDELIMITER
+IC.SEV_SUFFIX
+IC.COLUMNNUM
+IC.ADD_FLD1_VALUE
+IC.ADD_FLD2_VALUE
+IC.ADD_FLD3_VALUE
+IC.ADD_FLD4_VALUE
+   let $IC_DESCR100         = &IC.DESCR100
+   let $IC_FILEPATH1        = &IC.FILEPATH1
+   let $IC_FILEPATH2        = &IC.FILEPATH2
+   let $IC_FILE_ARCHIVE_DIR = &IC.FILE_ARCHIVE_DIR
+   let $IC_FILENAME         = &IC.FILENAME
+   let $IC_FILE_NAME        = &IC.FILE_NAME
+   let $IC_FILE_NAME2       = &IC.FILE_NAME2
+   let $IC_FLDDEFNNAME      = &IC.FLDDEFNNAME
+   let $IC_BAH_FILE_LAYOUT  = &IC.BAH_FILE_LAYOUT
+   let $IC_EFFDT            = &IC.EFFDT
+   let $IC_ASOFDATE         = &IC.ASOFDATE
+   let $IC_DATA_DELIMITER   = &IC.DATA_DELIMITER
+   let $IC_FLDDELIMITER     = &IC.FLDDELIMITER
+   let $IC_SEV_SUFFIX       = &IC.SEV_SUFFIX
+   let #IC_COLUMNNUM        = &IC.COLUMNNUM
+   let $IC_ADD_FLD1_VALUE   = &IC.ADD_FLD1_VALUE
+   let $IC_ADD_FLD2_VALUE   = &IC.ADD_FLD2_VALUE
+   let $IC_ADD_FLD3_VALUE   = &IC.ADD_FLD3_VALUE
+   let $IC_ADD_FLD4_VALUE   = &IC.ADD_FLD4_VALUE
+
+FROM HRPRD.PS_BAH_INT_DEFS IC
+WHERE IC.Processing_Name = $processingName
+END-SELECT
+   if $IC_DESCR100 = 'notfound'
+      show ''
+      show 'WARNING: Not interface configuration found for process: ' $processingName
+      show ''
+   end-if
+end-procedure
+!
+!  If the file to be created is based on a PS file layout definition, then the calling program should call this with $fileLayout set to the definition name
+!
+begin-procedure load-filelayout-fields
+   let #colCnt2 = 0
+   show 'File Layout Definition'
+   show '======================'
+BEGIN-SELECT
+FLD.FLDFIELDNAME
+FLD.FLDLENGTH
+FLD.FLDFIELDTYPE
+FLD.FLDSEQNO
+   let #colCnt2     = #colCnt2+ 1
+   let $flFieldName = &FLD.FLDFIELDNAME
+   let #flFieldLen  = &FLD.FLDLENGTH
+   let $flFieldType = &FLD.FLDFIELDTYPE
+   let #flFieldSeq  = &FLD.FLDSEQNO
+   show #flFieldSeq edit '999' ': ' $flFieldName ' ' #flFieldLen edit '99,999'
+   put #flFieldLen into fieldSize (#colCnt)
+   if #colCnt2<> #flFieldSeq
+       show 'Error: File Layout field Sequence does not match count at field: ' $flFieldName '  Count at ' #colCnt edit '999' ' Seq number at ' #flFieldSeq edit '999'
+   end-if
+
+FROM HRPRD.PSFLDFIELDDEFN FLD
+WHERE FLD.FLDDEFNNAME = $fileLayout
+ORDER BY FLD.FLDSEQNO
+END-SELECT
+   if #colCnt2 = 0
+      show 'Warning: No File Layout found.'
+   else
+      let #colCnt = #colCnt2
+      show 'Column Count set by field layout at: ' #colCnt edit '999'
+   end-if
+   show ''
+end-procedure
+
+!
+!  If no editting on field size is needed, then use zero (0) for the length.  Use this procedure to init all fields to zero
+!  #colCnt should of been set in calling program to the number of fields/columns in the source file
+!
+begin-procedure load-zero-lengths
+   let #lp = 1
+   while #lp <= #colCnt
+      put 0 into fieldSize (#lp)
+      let #lp = #lp + 1
+   end-while
+end-procedure
+
+!
+!   Use a procedure like this, in your source program, to manually set field lengths
+!
+!begin-procedure load-field-lengths
+!   put  20 into fieldSize (1)
+!   put  12 into fieldSize (2)
+!   put   5 into fieldSize (3)
+!   put   2 into fieldSize (4)
+!   put  34 into fieldSize (5)
+!   put 500 into fieldSize (6)
+!   put  10 into fieldSize (7)
+!   put  30 into fieldSize (8)
+!   let #colCnt = 8
+!end-procedure
+
+begin-procedure display-field-lengths
+   let #idx = 1
+   show 'Field Lengths'
+   show '============='
+   while #idx <= #colCnt
+      get #len from fieldSize (#idx)
+      show '  ' #idx edit '999' ': ' #len edit '99,999'
+      let #idx = #idx + 1
+   end-while
+end-procedure
+!
+!  This should be defined in the calling program and is dependent on how the file is processed and defined.
+!
+!begin-procedure init-field-lengths
+!   do load-field-lengths       !predefine/hardcode the field lengths
+!
+!  ~or~
+!
+!   do load-filelayout-fields   !get field lengths from a file layout definition (aligned to the output file)
+!
+!   do display-field-lengths    !display the field definitions/lengths
+!end-procedure
+
+!  This basic procedure can split a well formed csv line.
+
+begin-procedure split-CSV($delim, $csv, :#cellCnt)
+   let #csvLen = length($csv)
+   let #nextChar = 1
+   let #cellCnt = 0
+   let $nextLine = 'N'
+   let #nextComm = instr($csv, $delim,  #nextChar)
+   let #nextQuote = instr($csv, '"',  #nextChar) + 1
+   while #nextComm >  0 or #nextQuote > 1
+      if #nextComm < #nextQuote or
+         #nextQuote = 1
+         let #cellLen = #nextComm - #nextChar
+         let $cell = substr($csv, #nextChar, #cellLen)
+         let #nextChar = #nextComm + 1
+      else
+         let #endQuote = instr($csv, '"',  #nextQuote)
+         if #endQuote = 0
+            let $nextLine = 'Y'
+            let #cellLen = #csvLen - #nextQuote
+            let $cell = substr($csv, #nextQuote, #cellLen)
+         else
+            let #cellLen = #endQuote - #nextQuote
+            let $cell = substr($csv, #nextQuote, #cellLen)
+            let #nextChar = #endQuote + 2
+         end-if
+      end-if
+
+      if $nextLine = 'N'
+         let #cellCnt = #cellCnt + 1
+         put $cell into csvCells(#cellCnt)
+!         show #cellCnt edit '999' '> ' $cell
+      end-if
+
+      let #nextComm = instr($csv, $delim,  #nextChar)
+      let #nextQuote = instr($csv, '"',  #nextChar) + 1
+!      show  #nextChar edit '9,999' ' / '  #nextQuote edit '9,999'
+   end-while
+   let #cellLen = #csvLen - #nextChar + 1
+   let $cell = substr($csv, #nextChar, #cellLen)
+   let #cellCnt = #cellCnt + 1
+   put $cell into csvCells(#cellCnt)
+!   show #cellCnt edit '999' '> '$cell
+!   show ''
+end-procedure
+
+!  Utility function to displays the cell results from the basic/simple procedure 
+!
+begin-procedure show-cells(#cellCnt)
+   let #cellNum = 1
+   while #cellNum <= #cellCnt
+      get $cell from csvCells(#cellNum)
+      get #len from fieldSize(#cellNum)
+      let #len2 = length($cell)
+      show #cellNum edit '999' '> ' $cell ' ' noline
+      if #len2 > #len and
+         #len > 0
+         let $cell = substr($cell, 1, #len)
+         show 'Too long:' $cell
+         let $_stopPgm = 'Y'
+      end-if
+      show ''
+      let #cellNum = #cellNum + 1
+   end-while
+   show ''
+end-procedure
+
+!
+!   The code below is the better solution for identifying cells broken over 2 or more input records.
+!
+
+!
+!   Build a new file record from that contents of the array.  Allows for the array to be modified by a
+!   another process to alter the contents of the output.
+!
+begin-procedure build-from-array
+   let $newRecord = ''
+   let #lp = 1
+   while #lp <= #colCnt
+      get $field from csvCells(#lp)
+      if not isblank($newRecord)
+         let $newRecord = $newRecord || $newDelim
+      end-if
+      let $newRecord = $newRecord || $field
+      let #lp = #lp + 1
+   end-while
+end-procedure
+
+!
+!   Process the cells loaded from the record.  Calling procedure must have procssing procedure defined.
+!
+begin-procedure process-cells
+   let #pcLp = 1
+   while #pcLp <= #colCnt
+      get $cellVal from csvCells(#pcLp)
+      do process-cell-content(#pcLp, $cellVal)   !This procedure must be defined in the calling program.  Can be an empty procedure.
+      let #pcLp = #pcLp + 1
+   end-while
+end-procedure
+
+begin-procedure add-next-line
+   do read-source-csv                   !This file read procedured shuold be defined in the calling program
+   let #csvReadCnt = #csvReadCnt + 1
+   let #noCellCnt  = #noCellCnt  + 1
+   let $csvLine = $csvLine || $theLine  !$theLine should be where the source file is read into
+   let #csvLen = length($csvLine)
+!   show #csvLen edit '9,999' ':' $csvLine
+end-procedure
+
+begin-procedure skip-double-quotes
+!
+!  This procedure is used to advance the #endQuote value past a consequtive pair of double quotes ("") that appear in the current $csvString
+!  Returns the true #endQuote value, which could be 1 if there is no end quote
+!
+!  #endQuote comes in at Plus 1.  The actual end quote found is at #endQuote - 1.  If the next quote is actually found at Plus 1, then it is a boulde.
+!
+   let #dblQuote = instr($csvLine, '"',  #endQuote)
+!   show 'DQ: end>' #endQuote edit '999' '  dbl>' #dblQuote edit '999'
+   let $endQuoteFound = 'N'
+   while $endQuoteFound = 'N'
+     while #endQuote = #dblQuote 
+           and #endQuote <> 1
+        show 'Double Quotes: ' #nextQuote edit '9999' ' :: ' #endQuote edit '9999'  ' :: ' #dblQuote edit '9999' 
+        let #endQuote = instr($csvLine, '"',  #endQuote + 1) + 1
+        let #dblQuote = instr($csvLine, '"',  #endQuote)
+     end-while
+!
+!    This update is used to bypass embedded ", not pairs.  Any field that starts with ", should end with a " followed by a comma
+!
+     let $afterQuote = substr($csvLine, #endQuote, 1)   !Test to see if this is actual end quote.  End quote should be followed by a comma (or end of line, eh??)
+!     show 'After: ' $afterQuote  #endQuote edit '99'  '  csvLen:' #csvLen edit '99'
+     if $afterQuote = $delim or
+        #endQuote = #csvLen + 1
+       let $endQuoteFound = 'Y'
+     else
+        if #endQuote = 1              !No quote found
+           let $endQuoteFound = 'Y'
+        else
+           let #endQuote = instr($csvLine, '"',  #endQuote + 1)
+        end-if
+     end-if
+   end-while
+end-procedure
+!
+!  This is needed in fields that have embedded (double) quotes ("), not a pair of consectutive quotes.  Should this be combined??  Lets try
+!
+begin-procedure get-end-quote
+end-procedure
+
+begin-procedure get-next-field
+!
+!  Returns the next field, including the delimiter.
+!
+!  Returns $cell with the value of this next field.  If field is not found, or is a quoted string which is still being built, $cell will be blank, and procedure should be called again.
+!
+!  The only field that can really be blank, is the last field, because all other fields are returned with the delimiter.  So, a blank field before the last, would be like, just a comma or pipe, whatever.  If the last field
+!  is blank, $cell will be blank and $fieldIsBlank will be set to 'Y'
+!
+   let $cell         = ''
+   let $fieldIsBlank = 'N'
+   let #cut          = 0
+   let #nextComm = instr($csvLine, $delim,  0)
+   let #nextQuote = instr($csvLine, '"', 0) + 1   !This is the " that appears next
+
+   if isblank($csvLine)     !line is used up, no more characters on this line
+      if $inQuote = 'N'     !Not looking for end quote
+         if (#field = (#colCnt - 1))   
+            let $fieldIsBlank = 'Y'   !Expecting last field, it is blank
+         else
+         end-if
+      else
+      end-if
+   else
+      if (#field = (#colCnt - 1)) and
+         #nextComm = 0
+         let #nextComm = #csvLen              !On last field, there won't be a delimiter, so set imaginary delimiter to end of line
+      end-if
+   end-if
+
+   let #endQuote = instr($csvLine, '"',  #nextQuote) + 1  !This is the " that first appears after #nextQuote, plus 1
+!   show '  Next Comma:' #nextComm  edit '9,999'
+!   show '  Next Quote:' #nextQuote edit '9,999'
+!   show '   End Quote:' #endQuote  edit '9,999'
+!   show '[' $csvLine '] ' $inQuote
+   
+   if #nextQuote = 2 and #endQuote = 3           !Field starts with a double quote, so it is not a quote field.  Go to delimiter
+      let #nextQuote = instr($csvLine, '"',  #endQuote) + 1
+      if #nextQuote = 4                          !or is it? Have 3 consectutive quotes, so quoted field starts with a double qoute
+         let #nextQuote = 2
+      end-if
+   end-if
+
+!   show '  Next Quote:' #nextQuote edit '999'
+   
+   if $fieldIsBlank = 'N' 
+      if #nextQuote <> 2 and                     !Get the next unquoted 'cell'   -Quote is not first character in cell
+         #nextComm <> 0  and                     !                               -There is a delimiter
+         $inQuote = 'N'                          !                               -Not in middle of a quote
+         let $cell = substr($csvLine, 1, #nextComm)
+         let #cut  = #nextComm + 1
+      else
+!         show 'EQ:' #endQuote edit '999'
+         do skip-double-quotes                 !Start of a quoted field, skip past double quotes to get a new endQuote
+         
+         if #endQuote = 1   !No ending quote
+            let $csvLine = $csvLine || $append       !If there is no ending quote, then go read next line from file and add it to csvLine
+            let #crlfInserts = #crlfInserts + 1      !Then, process will return and calling procedure will loop, and try getting next field again
+            do add-next-line                         !As long as it continues to not find the ending quote, the csvLine will be appended.
+            let $inQuote = 'Y'                       !Ultimately, it will end on the other side of this else:
+         else
+            let $afterQuote = substr($csvLine, #endQuote + 1, 1)   !Test to see if this is actual end quote.  End quote should be followed by a comma (or end of line, eh??)
+!            if $afterQuote = $delim
+              let $cell = substr($csvLine, 1, #endQuote)
+              let #cut  = #endQuote + 1
+              let $inQuote = 'N'                       !inQuote is set to 'Y' when an initial quote is encountered, but not an ending quote (ie, it spans multi records.
+!            else
+!            end-if
+         end-if
+      end-if
+   end-if
+   
+   if #cut > 0    
+      let $csvLine = substr($csvLine, #cut, #csvLen)   !If a field has been found, then trucate $csvLine to contain what is remaining
+      let #csvLen = length($csvLine)
+   end-if
+end-procedure
+
+begin-procedure disp-cell(:$cell, #cellNum, $listFields)
+   get #len from fieldSize(#cellNum)
+   let #len2 = length($cell) - 1
+   if $listFields = 'Y'
+      show #cellNum edit '999' ']' $cell ' ' noline
+   end-if
+   if #len2 > #len and
+      #len > 0
+      let $firstChar = substr($cell, 1, 1)
+      if $firstChar = '"'
+         let $endChar = '"'
+         let #len = #len + 1    !Grab an extra character to compensate for the beginning quote
+      else
+         let $endChar = ''
+      end-if
+      let $cell = substr($cell, 1, #len) || $endChar || $_delim
+      show '  Warning:: Too long, truncated to:[' $cell ']' noline
+   end-if
+!
+!  Place cell/field, without delimiter, into the array
+!   
+   let #cellLen = length($cell)
+   if substr($cell, #cellLen, 1) = $_delim
+      let $cell2 = Rtrim($cell, $_delim)
+   end-if
+   put $cell2 into csvCells(#cellNum)
+!   let $cell = $cell || $_newDelim   Dont do this here, oye
+
+   if $listFields = 'Y'
+      show ''
+   end-if
+end-procedure
+
+begin-procedure write-and-reset
+   if $listFields = 'Y'
+      show '----------------------------------------------------------------------------'
+   end-if
+   let #field = 0                 !Reset
+   do write-csv-file              !This procedure needs to be defined in the SQR calling program
+   let #exit = 0
+   do add-next-line
+end-procedure
+
+begin-procedure process_csv
+   show ''
+   show 'Begin of CSV parsing process'
+   show '   CSV delimeter Character: ' $delim
+   let $comm = ''
+   if isblank($delim)
+      show 'WARNING --- No delimiter is defined.  Process will fail without proper delimiter'
+      show ''
+   end-if
+   if $delim = $newDelim
+      let $comm = ' (no change in delimeter)'
+   end-if
+   if isblank($newDelim)
+      let $newDelim = $delim
+      let $comm = ' (new delimeter not provided, using same delimeter)'
+   end-if
+   show '   New CSV delimeter Character: ' $newDelim $comm
+   show '   Mutliline Join Character(s): ' $append
+   show '   Number of columns: ' #colCnt edit '9,999'
+   show '   Max number of records without a cell found: ' #maxLineCnt edit '9,999'
+   show ''
+   let #exitMax = 20000   !This is a fail safe to prevent endless looping.
+   let #field = 0
+   let #csvReadCnt  = 0
+   let #crlfInserts = 0
+   let #recsWrit    = 0
+   let $inQuote = 'N'
+   let $csvLine = ''
+   let $newLine = ''
+   let $eofCsvFile = 'N'
+   do init-field-lengths  !This procedure should be defined in the calling program.  See above for a sample.
+   do add-next-line
+   while $eofCsvFile <> 'Y'  and #exit < #exitMax  and $stopPgm <> 'Y'     !Calling program needs to set $eofCsvFile
+      let #exit = #exit + 1
+      do get-next-field
+      if not isblank($cell) or
+         $fieldIsBlank = 'Y'
+         let #field = #field + 1
+         do disp-cell($cell, #field, $listFields)
+!         show #field edit '999' ']' $cell '>'
+         if $delim <> $newDelim                             !Change the delimiter.  Enclode in quotes, unless it already has a quote
+            let #cellLen = length($cell)
+            let $firstChar = substr($cell, 1, 1)
+            let $lastChar  = substr($cell, #cellLen, 1)
+            let #hasNewDelim = instr($cell, $newDelim, 0)
+            if #hasNewDelim > 0
+              if $firstChar = '"'
+                 let $appendChar = ''
+              else
+                 let $appendChar = '"'
+              end-if
+            else
+              let $appendChar = ''
+            end-if
+            if $lastChar = $delim
+               let $cell = $appendChar || Rtrim($cell, $delim) || $appendChar || $newDelim
+!               show 'New Cell: ' $cell
+            else
+               let $cell = $appendChar || $cell || $appendChar 
+            end-if
+         else
+         end-if
+         let $newLine = $newLine || $cell
+         let #noCellCnt = 0
+         
+         if #field > #colCnt  !Something has gone wrong
+           let $stopPgm = 'Y'
+           show ''
+           show 'ERROR: ' #field edit '9,999' ' is beyond the expected field count (as given): (' #colCnt edit '9,999' ').  Program Stopping'
+           show 'csvLine:<' $csvLine '>'
+           show ''
+         end-if
+
+         if #field  = #colCnt  !Have processed the last field.
+            do process-cells
+            do write-and-reset
+         end-if
+      end-if
+      
+      if #noCellCnt > #maxLineCnt 
+         let $stopPgm = 'Y'
+         show ''
+         show 'ERROR: ' #noCellCnt edit '9,999' ' records read without finding a cell.  Check split character(' $delim ').  Program Stopping'
+         show ''
+      end-if
+   end-while
+   show ''
+   show 'Last CSV:  <' $csvLine '>'
+   show 'Loop Count: ' #exit edit '99,999' '   (Count at or over ' #exitMax edit '999,999' ' will stop program.)'
+   show ''
+   show 'WARNING: On any kind of incompletion.  Restore original file to the _bckup file made at start of this process.'
+   show '' 
+   if #exitMax = #exit
+      show '   ERROR - WARNING: Max Loop Count hit.  Check output for loop or increase limit for a big file.'
+      let $stopPgm = 'Y'
+   end-if
+   do final-processing   !this needs to be included in calling procedure. Does any wrap up for final row processed
+   show ''
+   show 'Records Read:    ' #csvReadCnt   edit '99,999'
+   show 'CRLFs Inserted:  ' #crlfInserts  edit '99,999'
+   show 'Records Written: ' #recsWrit     edit '99,999'
+end-procedure
+
+!
+!   Typical calling procedure in the source program.
+!
+!begin-procedure do-ua
+!   let $delim  = '|'       Set the delimiter in the source file
+!   let $newDelim = ','     Set the delimiter in the new file (allows you to change delimiter (future implementation)
+!   let $append = '\n'      For text fields with CRLFs, that will be joined to one.  Define the delimiter between the lines joined.
+!   let #maxLineCnt = 100   States how many input records can be read before finding a split character.  Program stops as this max.
+!   do process_csv          Call the procedure to process the file
+!end-procedure
