@@ -1,0 +1,332 @@
+!-----------------------------------------------------------------------------
+!  CSV Read Test Program
+!    Read CSV file
+!
+!-----------------------------------------------------------------------------
+!-----------------------------------------------------------------------------
+!-----------------------------------------------------------------------------
+
+#Include 'setenv.sqc'  !Set environment
+#Include 'setup02.sqc' !Landscape Printer and page-size initialization
+
+begin-setup
+Create-Array Name=csvCells Size=50
+   field=cell:char
+
+Create-Array Name=fieldSize Size=50
+   field=maxLen:integer
+end-setup
+
+!----------------------------------
+Begin-Report
+!--------------
+
+  do StdAPI-Init
+
+  if $Prcs_Process_Instance = ''
+    ! Ask Output-Destination
+    show ''
+    show 'ERRROR: No Run Control found'
+    show ''
+    stop
+  else
+    if $sqr-platform = 'WINDOWS-NT'
+       let $prcs_oprid       = 'oprid'
+       let $prcs_run_cntl_id = 'runControl'
+    end-if
+    do get-int-run-control
+  end-if
+
+  do process-init
+  do process-main
+  do StdAPI-Term
+End-Report
+
+begin-procedure process-init
+
+  show 'Platform: ' $sqr-platform
+
+  do Init-DateTime
+  do Get-Current-DateTime
+  do convert-to-DTU-date($AsOfToday, $currentDate)
+  show 'Run Date: ' $AsOfToday '   '  $currentDate
+  do Init-Number
+
+  let $DB = 'noDB'
+BEGIN-SELECT
+DB.DBNAME
+   let $DB = &DB.DBNAME
+FROM ps.psdbowner DB
+END-SELECT
+  show 'Database:' $DB
+
+End-Procedure
+
+begin-heading 6
+ Move 'reportName'  to $ReportID
+ Move 'reportTitle' to $ReportTitle
+
+ let $ReportTitle = $ReportTitle || $RUNCNTL_PAYGROUP
+end-heading
+
+begin-procedure iteration-init
+
+  do get-interface-defaults
+
+  let $textExecution = ''             !Suffix for test files
+  if $testExec = 'Y'
+     let $textExecution = '_' || $db
+  end-if
+
+  let $sourceFile     = $IC_FILEPATH1 || $IC_FILENAME  || $textExecution || '.' || $extension
+  let $backupFilename = $IC_FILEPATH1 || $IC_FILENAME  || $textExecution || '_bckup.' || $extension
+!
+! The output csv file from this process will have the same file name as the original file.  At start, rename the
+! original file to a backup file.  The backup file will be the file that is read.
+!
+  show ''
+  show 'Source File: ' $sourceFile
+  show 'Backup File: ' $backupFilename
+  show ''
+!
+! Make sure backup file does not already exist.  If so, stop.
+!
+  do backup-exists($backupFilename, $backupExists)
+  if $backupExists = 'Y'
+     show ''
+     show 'ERROR: Backup file already exists.  Check files, especially source, and re-submit.  Program Stopping.'
+     show ''
+     stop
+  end-if
+!
+! Rename the source file to the backup.  Stop if an error occurs.
+!
+  let #renameRC = rename($sourceFile, $backupFilename)
+  if #renameRC <> 0
+     show ''
+     show 'ERROR: Backup/Rename of source file [' $sourceFile '] to [' $backupFilename '] failed.  Program stopping.'
+     show ''
+     stop
+  end-if
+
+  let $inputFile  = $backupFilename       !switch around the file names
+  let $outputFile = $sourceFile
+   
+  do open-csv-source
+  do Open-Output-File
+
+End-Procedure
+
+begin-procedure get-interface-defaults
+
+   let #colCnt = #IC_COLUMNNUM
+
+   show '=========================================================='
+   show 'File Path:    ' $IC_FILEPATH1
+   show 'File Name:    ' $IC_FILENAME
+   show 'File Layout:  ' $fileLayout
+!
+!  Get file extension, after last period
+!
+   let #ext = instr($IC_FILENAME, '.', #ext2)
+   while #ext > 0
+      let #ext2 = #ext + 1
+      let #ext = instr($IC_FILENAME, '.', #ext2)
+   end-while
+   let #exLen = length($IC_FILENAME) - #ext2 + 1
+   let $extension = substr($IC_FILENAME, #ext2, #exLen)
+   show 'File extension:       ' $extension
+   let $IC_FILENAME = substr($IC_FILENAME, 1, #ext2 - 2)
+   show 'File name, truncated: '$IC_FILENAME
+
+end-procedure
+
+begin-Procedure open-csv-source
+   show 'CSV source file:' $inputFile
+   Open $inputFile as 1
+     for-reading record=1000:Vary
+     Status=#Open1
+   if #Open1 = -1
+      let $MESSAGE_TYPE = $ERROR
+      let $ERROR_MESSAGE = $inputFile || $FILE_NOT_OPEN_READ_MSG
+      show $ERROR_MESSAGE
+      stop
+   end-if
+End-Procedure
+
+begin-Procedure Open-Output-File
+   show 'Output File: ' $outputFile
+   Open $outputFile as 2
+     for-writing record=8000:Vary
+     Status=#Open2
+   if #Open2 = -1
+      let $MESSAGE_TYPE = $ERROR
+      let $ERROR_MESSAGE = $outputFile || $FILE_NOT_OPEN_READ_MSG
+      show $ERROR_MESSAGE
+      stop
+   end-if
+End-Procedure
+
+begin-Procedure Close-I/O-Files
+   Close 1
+end-procedure  
+
+begin-procedure delete-backup-file
+  show 'Deleting Backup File: [' $backupFilename ']'
+  let #deleteRC = delete($backupFilename)
+  if #deleteRC = 0
+     show '  -Successful Deletion'
+  else
+     show '  -Error Deleting, RC: ' #deleteRC edit '99'
+  end-if
+end-procedure
+
+begin-procedure restore-orig-file
+  show 'Restoring Source File: [' $sourceFile '] from backup file [' $backupFilename ']'
+  show '  -First, delete original source file: [' $sourceFile ']'
+  let #deleteRC = delete($sourceFile)
+  if #deleteRC = 0
+     show '  -Second, rename backup: [' $backupFilename '] to original: [' $sourceFile ']'
+     let #renameRC = rename($backupFilename, $sourceFile)
+     if #renameRC = 0
+        show '  -Successful Renamed'
+     else
+        show '  -Error Renaming, RC: ' #renameRC edit '99'
+     end-if
+  else
+     show '  -Error Deleting, RC: ' #deleteRC edit '99'
+  end-if
+end-procedure
+
+#Include 'csvSplit.sqc'  !CSV Utility functions
+
+begin-procedure read-source-csv
+   Read 1 into $theLine:10000
+   if #end-file
+      let $eofCsvFile = 'Y'
+   else
+      let #recsRead = #recsRead + 1
+   end-if
+end-procedure
+
+begin-procedure write-csv-file
+   write 2 from $newLine
+   let $newLine  = ''
+   let $csvLine  = ''
+   let #csvLen   = 0
+   let #field    = 0
+   let #recsWrit = #recsWrit + 1
+end-procedure
+!
+! Manually set the field sizes for the csv file.  Zero means no max size
+!
+begin-procedure load-field-lengths
+   put 0 into fieldSize (1)
+   put 0 into fieldSize (2)
+   put 0 into fieldSize (3)
+   put 0 into fieldSize (4)
+   put 0 into fieldSize (5)
+   put 0 into fieldSize (6)
+   put 0 into fieldSize (7)
+end-procedure
+
+begin-procedure for-each-row-1
+!
+!   Code in this procedure is executed for each row processed without conisderation to its grouping or ranking
+!
+   show 'Load: ' $candId '  ' $lastName ' ' $emplid ' ' $systemSource ' ' $startDate noline
+   if isblank($startDate)
+      let $startDt = ''
+   else
+      let $startDate = substr($startDate, 1, 10)
+      do convert-from-DTU-date($startDate, $startDt)
+   end-if
+   
+   show ' '
+end-procedure
+
+begin-procedure final-processing
+!
+!  call this procedure after going through entire file.  This should do any final processing including the
+!  processing of the last record/row/employee for instances where employee control break processin is done.
+!
+  if $stopPgm = 'Y'
+    show '*******CSV Process returned an error.  Restoring original file.'
+    do restore-orig-file
+  else
+    show '+++++++CSV Process ended successfully.  Deleting backup file.'
+  end-if
+  do delete-backup-file
+end-procedure
+!
+!  When the csv file is read, sqc will check field sizes and truncate if needed.
+!
+begin-procedure init-field-lengths
+!   do load-field-lengths          !Call a local procedure to manually set field sizes
+   do load-zero-lengths           !Call a procedure to init the array based on filed count; set all to 0 (no max len) 
+!   do load-filelayout-fields      !Use a defined file layout to get field counts and max field sizes, this is in sqc
+   do display-field-lengths
+end-procedure
+!
+!  After sqc finishes reading field/cell, it calls this procedure to allow processing on the field.
+!  Generally, no procesing is done until all fields for the row are read.
+!
+begin-procedure process-cell-content(#lp, $cellVal)  !lp is the field number
+    if #lp = #_IC_COLUMNNUM               !This will process when hitting the last column
+       let #_expCnt  = #_expCnt + 1
+
+       if #_iteration = 1                     !Use a flag such as this to process multiple csv files in 1 sqr
+          get $_candId      from csvCells (1)
+          get $_talMastNum  from csvCells (2)
+          get $_emplid      from csvCells (3)
+          get $_lastname    from csvCells (4)
+          get $_firstname   from csvCells (5)
+          get $_startDate   from csvCells (6)
+       end-if
+
+       if #_iteration = 1
+         do for-each-row-1                    !Append a value, again to process multiple files in 1 sqr
+         let $_prevcandId = $_candId
+       end-if
+
+    end-if
+end-procedure
+
+begin-procedure next-iteration
+   let $delim      = ','     !This is the delimiter used in the input file
+   let $newDelim   = ','     !This is the delimiter used in output file, can differ
+   let $append     = '\n'    !This string is used to replace CRLFs embedded within strings
+   let #maxLineCnt = 100     !This is a fail safe to halt processing if reading file goes awry
+   let $listFields = 'Y'     !Set this to Y to list details of parsing in the SQR log file  Y/N
+   let $testExec   = 'N'     !Indicates test execution; appends db name to files   Y/N
+
+   do iteration-init
+   do process_csv            !Call this procedure to start processing of csv file
+   do Close-I/O-Files
+end-procedure
+
+begin-procedure get-iterations
+   let #iteration = 1
+   let $IC_FILEPATH1    = 'C:\temp\'                  !Path to files, particularily csv source
+   let $IC_FILENAME     = 'sample.csv'                !csv source file name
+   let #IC_COLUMNNUM    = 33                          !columns in csv file
+   let $fileLayout      = ''                          !PS file layout definition (optional)
+   do next-iteration
+   
+   show ''
+   show 'Complete'
+
+end-procedure
+
+begin-procedure process-main
+
+   do get-iterations
+
+end-procedure
+
+#Include 'curdttim.sqc'  !Get-CURRENT-DateTime PROCEDURE
+#Include 'datetime.sqc'  !Routines FOR DATE AND TIME formatting
+#Include 'datemath.sqc'  !Routines FOR DATE AND TIME formatting
+#Include 'number.sqc'    !Routines TO format numbers
+#Include 'reset.sqc'     !Reset printer PROCEDURE
+#Include 'stdapi.sqc'    !UPDATE Process API

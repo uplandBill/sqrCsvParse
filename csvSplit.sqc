@@ -91,62 +91,6 @@ Where RC.OPRID       = $prcs_oprid
 END-SELECT
 end-procedure
 !
-!   Get interface configurations from table
-!     Input: $processingName  - Configuration Profile (should come from run control)
-!
-begin-procedure get-interface-configs
-   let $IC_DESCR100 = 'notfound'
-   show 'Retrieve interface configurations for process: ' $processingName
-BEGIN-SELECT
-IC.DESCR100
-IC.FILEPATH1
-IC.FILEPATH2
-IC.FILE_ARCHIVE_DIR
-IC.FILENAME
-IC.FILE_NAME
-IC.FILE_NAME2
-IC.FLDDEFNNAME
-IC.BAH_FILE_LAYOUT
-IC.EFFDT
-IC.ASOFDATE
-IC.DATA_DELIMITER
-IC.FLDDELIMITER
-IC.SEV_SUFFIX
-IC.COLUMNNUM
-IC.ADD_FLD1_VALUE
-IC.ADD_FLD2_VALUE
-IC.ADD_FLD3_VALUE
-IC.ADD_FLD4_VALUE
-   let $IC_DESCR100         = &IC.DESCR100
-   let $IC_FILEPATH1        = &IC.FILEPATH1
-   let $IC_FILEPATH2        = &IC.FILEPATH2
-   let $IC_FILE_ARCHIVE_DIR = &IC.FILE_ARCHIVE_DIR
-   let $IC_FILENAME         = &IC.FILENAME
-   let $IC_FILE_NAME        = &IC.FILE_NAME
-   let $IC_FILE_NAME2       = &IC.FILE_NAME2
-   let $IC_FLDDEFNNAME      = &IC.FLDDEFNNAME
-   let $IC_BAH_FILE_LAYOUT  = &IC.BAH_FILE_LAYOUT
-   let $IC_EFFDT            = &IC.EFFDT
-   let $IC_ASOFDATE         = &IC.ASOFDATE
-   let $IC_DATA_DELIMITER   = &IC.DATA_DELIMITER
-   let $IC_FLDDELIMITER     = &IC.FLDDELIMITER
-   let $IC_SEV_SUFFIX       = &IC.SEV_SUFFIX
-   let #IC_COLUMNNUM        = &IC.COLUMNNUM
-   let $IC_ADD_FLD1_VALUE   = &IC.ADD_FLD1_VALUE
-   let $IC_ADD_FLD2_VALUE   = &IC.ADD_FLD2_VALUE
-   let $IC_ADD_FLD3_VALUE   = &IC.ADD_FLD3_VALUE
-   let $IC_ADD_FLD4_VALUE   = &IC.ADD_FLD4_VALUE
-
-FROM HRPRD.PS_BAH_INT_DEFS IC
-WHERE IC.Processing_Name = $processingName
-END-SELECT
-   if $IC_DESCR100 = 'notfound'
-      show ''
-      show 'WARNING: Not interface configuration found for process: ' $processingName
-      show ''
-   end-if
-end-procedure
-!
 !  If the file to be created is based on a PS file layout definition, then the calling program should call this with $fileLayout set to the definition name
 !
 begin-procedure load-filelayout-fields
@@ -164,7 +108,7 @@ FLD.FLDSEQNO
    let $flFieldType = &FLD.FLDFIELDTYPE
    let #flFieldSeq  = &FLD.FLDSEQNO
    show #flFieldSeq edit '999' ': ' $flFieldName ' ' #flFieldLen edit '99,999'
-   put #flFieldLen into fieldSize (#colCnt)
+   put #flFieldLen into fieldSize (#colCnt2)
    if #colCnt2<> #flFieldSeq
        show 'Error: File Layout field Sequence does not match count at field: ' $flFieldName '  Count at ' #colCnt edit '999' ' Seq number at ' #flFieldSeq edit '999'
    end-if
@@ -232,51 +176,51 @@ end-procedure
 !   do display-field-lengths    !display the field definitions/lengths
 !end-procedure
 
-!  This basic procedure can split a well formed csv line.
-
-begin-procedure split-CSV($delim, $csv, :#cellCnt)
-   let #csvLen = length($csv)
-   let #nextChar = 1
-   let #cellCnt = 0
-   let $nextLine = 'N'
-   let #nextComm = instr($csv, $delim,  #nextChar)
-   let #nextQuote = instr($csv, '"',  #nextChar) + 1
-   while #nextComm >  0 or #nextQuote > 1
-      if #nextComm < #nextQuote or
-         #nextQuote = 1
-         let #cellLen = #nextComm - #nextChar
-         let $cell = substr($csv, #nextChar, #cellLen)
-         let #nextChar = #nextComm + 1
-      else
-         let #endQuote = instr($csv, '"',  #nextQuote)
-         if #endQuote = 0
-            let $nextLine = 'Y'
-            let #cellLen = #csvLen - #nextQuote
-            let $cell = substr($csv, #nextQuote, #cellLen)
-         else
-            let #cellLen = #endQuote - #nextQuote
-            let $cell = substr($csv, #nextQuote, #cellLen)
-            let #nextChar = #endQuote + 2
-         end-if
-      end-if
-
-      if $nextLine = 'N'
-         let #cellCnt = #cellCnt + 1
-         put $cell into csvCells(#cellCnt)
-!         show #cellCnt edit '999' '> ' $cell
-      end-if
-
-      let #nextComm = instr($csv, $delim,  #nextChar)
-      let #nextQuote = instr($csv, '"',  #nextChar) + 1
-!      show  #nextChar edit '9,999' ' / '  #nextQuote edit '9,999'
-   end-while
-   let #cellLen = #csvLen - #nextChar + 1
-   let $cell = substr($csv, #nextChar, #cellLen)
-   let #cellCnt = #cellCnt + 1
-   put $cell into csvCells(#cellCnt)
-!   show #cellCnt edit '999' '> '$cell
-!   show ''
-end-procedure
+!  This basic procedure can split a well formed csv line without any CRLFs.
+!
+! begin-procedure split-CSV($delim, $csv, :#cellCnt)
+!    let #csvLen = length($csv)
+!    let #nextChar = 1
+!    let #cellCnt = 0
+!    let $nextLine = 'N'
+!    let #nextComm = instr($csv, $delim,  #nextChar)
+!    let #nextQuote = instr($csv, '"',  #nextChar) + 1
+!    while #nextComm >  0 or #nextQuote > 1
+!       if #nextComm < #nextQuote or
+!          #nextQuote = 1
+!          let #cellLen = #nextComm - #nextChar
+!          let $cell = substr($csv, #nextChar, #cellLen)
+!          let #nextChar = #nextComm + 1
+!       else
+!          let #endQuote = instr($csv, '"',  #nextQuote)
+!          if #endQuote = 0
+!             let $nextLine = 'Y'
+!             let #cellLen = #csvLen - #nextQuote
+!             let $cell = substr($csv, #nextQuote, #cellLen)
+!          else
+!             let #cellLen = #endQuote - #nextQuote
+!             let $cell = substr($csv, #nextQuote, #cellLen)
+!             let #nextChar = #endQuote + 2
+!          end-if
+!       end-if
+! 
+!       if $nextLine = 'N'
+!          let #cellCnt = #cellCnt + 1
+!          put $cell into csvCells(#cellCnt)
+! !         show #cellCnt edit '999' '> ' $cell
+!       end-if
+! 
+!       let #nextComm = instr($csv, $delim,  #nextChar)
+!       let #nextQuote = instr($csv, '"',  #nextChar) + 1
+! !      show  #nextChar edit '9,999' ' / '  #nextQuote edit '9,999'
+!    end-while
+!    let #cellLen = #csvLen - #nextChar + 1
+!    let $cell = substr($csv, #nextChar, #cellLen)
+!    let #cellCnt = #cellCnt + 1
+!    put $cell into csvCells(#cellCnt)
+! !   show #cellCnt edit '999' '> '$cell
+! !   show ''
+! end-procedure
 
 !  Utility function to displays the cell results from the basic/simple procedure 
 !
@@ -298,11 +242,6 @@ begin-procedure show-cells(#cellCnt)
    end-while
    show ''
 end-procedure
-
-!
-!   The code below is the better solution for identifying cells broken over 2 or more input records.
-!
-
 !
 !   Build a new file record from that contents of the array.  Allows for the array to be modified by a
 !   another process to alter the contents of the output.
@@ -362,10 +301,15 @@ begin-procedure skip-double-quotes
 !    This update is used to bypass embedded ", not pairs.  Any field that starts with ", should end with a " followed by a comma
 !
      let $afterQuote = substr($csvLine, #endQuote, 1)   !Test to see if this is actual end quote.  End quote should be followed by a comma (or end of line, eh??)
+     let $afterQuote2 = substr($csvLine, #endQuote + 1, 1)   !Test to see if this is actual end quote.  End quote should be followed by a comma (or end of line, eh??)
 !     show 'After: ' $afterQuote  #endQuote edit '99'  '  csvLen:' #csvLen edit '99'
      if $afterQuote = $delim or
+        ($afterQuote2 = $delim and $afterQuote = ' ') or
         #endQuote = #csvLen + 1
        let $endQuoteFound = 'Y'
+       if $afterQuote2 = $delim and $afterQuote = ' '
+          let #endQuote = #endQuote + 1
+       end-if
      else
         if #endQuote = 1              !No quote found
            let $endQuoteFound = 'Y'
@@ -485,7 +429,6 @@ begin-procedure disp-cell(:$cell, #cellNum, $listFields)
       let $cell2 = Rtrim($cell, $_delim)
    end-if
    put $cell2 into csvCells(#cellNum)
-!   let $cell = $cell || $_newDelim   Dont do this here, oye
 
    if $listFields = 'Y'
       show ''
